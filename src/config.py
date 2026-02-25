@@ -54,6 +54,10 @@ class ModerationConfig(BaseModel):
         default="config/system_prompt.md",
         description="Path to the system prompt markdown file",
     )
+    mute_duration_seconds: int = Field(
+        default=3600, ge=60, le=31536000,
+        description="Duration for 'mute' moderation action",
+    )
 
 
 class LLMConfig(BaseModel):

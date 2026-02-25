@@ -160,6 +160,7 @@ class ModerationEngine:
                 message,
                 reason=f"Pre-filter: {pre_match}",
                 reply_text="🚫 This message was removed by auto-moderator.",
+                sender_name=sender_name or "Unknown",
             )
             await self.actions.forward_to_review(
                 message,
@@ -204,7 +205,12 @@ class ModerationEngine:
 
         elif action == "delete":
             self._user_warnings[user_id] += 1
-            await self.actions.delete(message, reason=reason, reply_text=reply_text)
+            await self.actions.delete(
+                message,
+                reason=reason,
+                reply_text=reply_text,
+                sender_name=sender_name or "Unknown",
+            )
 
         elif action == "mute":
             self._user_warnings[user_id] += 1
@@ -212,8 +218,21 @@ class ModerationEngine:
                 chat=chat,
                 user_id=user_id,
                 reason=reason,
+                duration_seconds=self.config.mute_duration_seconds,
                 message=message,
                 reply_text=reply_text,
+                sender_name=sender_name or "Unknown",
+            )
+
+        elif action == "ban":
+            self._user_warnings[user_id] += 1
+            await self.actions.ban(
+                chat=chat,
+                user_id=user_id,
+                reason=reason,
+                message=message,
+                reply_text=reply_text,
+                sender_name=sender_name or "Unknown",
             )
 
         # Forward non-ok verdicts to review

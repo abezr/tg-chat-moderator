@@ -17,6 +17,8 @@ moderation:
   hard_ban_regex: []
   # Cooldown between moderation actions on the same user (seconds)
   user_cooldown_seconds: 60
+  # Duration for temporary mute actions (seconds). Default is 1 hour = 3600.
+  mute_duration_seconds: 3600
   # How many recent group messages to include as context for LLM
   context_window_messages: 15
   # Path to the system prompt file

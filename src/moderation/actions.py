@@ -42,12 +42,15 @@ class ActionExecutor:
             logger.error(f"Failed to warn: {e}")
             return False
 
-    async def delete(self, message, reason: str, reply_text: str = "") -> bool:
-        """Delete the message. Optionally reply first."""
+    async def delete(self, message, reason: str, reply_text: str = "", sender_name: str = "") -> bool:
+        """Delete the message and post an explanation to the chat."""
         try:
-            if reply_text:
-                await message.reply(reply_text)
+            chat_id = message.chat_id
             await message.delete()
+            if reply_text:
+                notification = f"🗑 **Message Removed**\n👤 User: {sender_name}\n📝 Reason: {reply_text}"
+                await self.client.send_message(chat_id, notification)
+            
             logger.info(
                 f"DELETE: user={message.sender_id} msg={message.id} reason='{reason}'"
             )
@@ -63,9 +66,10 @@ class ActionExecutor:
         reason: str,
         duration_seconds: int = 3600,
         reply_text: str = "",
+        sender_name: str = "",
         message=None,
     ) -> bool:
-        """Restrict user in the chat (mute)."""
+        """Restrict user in the chat (mute) and post an explanation."""
         try:
             from telethon.tl.functions.channels import EditBannedRequest
             from telethon.tl.types import ChatBannedRights
@@ -89,7 +93,8 @@ class ActionExecutor:
             )
 
             if message and reply_text:
-                await message.reply(reply_text)
+                notification = f"🔇 **User Muted**\n👤 User: {sender_name}\n⏳ Duration: {duration_seconds//60} mins\n📝 Reason: {reply_text}"
+                await self.client.send_message(message.chat_id, notification)
 
             logger.info(
                 f"MUTE: user={user_id} duration={duration_seconds}s reason='{reason}'"
@@ -98,6 +103,47 @@ class ActionExecutor:
         except Exception as e:
             logger.error(f"Failed to mute user {user_id}: {e}")
             return False
+
+    async def ban(
+        self,
+        chat: Union[Chat, Channel],
+        user_id: int,
+        reason: str,
+        reply_text: str = "",
+        sender_name: str = "",
+        message=None,
+    ) -> bool:
+        """Permanently ban user from the chat and post an explanation."""
+        try:
+            from telethon.tl.functions.channels import EditBannedRequest
+            from telethon.tl.types import ChatBannedRights
+
+            # Banned until date 0 = forever for Telegram
+            rights = ChatBannedRights(
+                until_date=None,
+                view_messages=True,
+            )
+
+            await self.client(
+                EditBannedRequest(
+                    channel=chat,
+                    participant=user_id,
+                    banned_rights=rights,
+                )
+            )
+
+            if message and reply_text:
+                notification = f"🚫 **User Banned**\n👤 User: {sender_name}\n📝 Reason: {reply_text}"
+                await self.client.send_message(message.chat_id, notification)
+
+            logger.info(
+                f"BAN: user={user_id} reason='{reason}'"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to ban user {user_id}: {e}")
+            return False
+
 
     async def forward_to_review(
         self,
