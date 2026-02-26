@@ -34,6 +34,10 @@ class ModerationConfig(BaseModel):
         default=None,
         description="Group/channel to forward flagged messages for human review",
     )
+    dry_run: bool = Field(
+        default=False,
+        description="Dry run mode: only forward to review group, no actions in main chat",
+    )
     hard_ban_keywords: list[str] = Field(
         default_factory=list,
         description="Keywords that trigger instant action (no LLM call)",
@@ -58,12 +62,31 @@ class ModerationConfig(BaseModel):
         default=3600, ge=60, le=31536000,
         description="Duration for 'mute' moderation action",
     )
+    newcomer_window_hours: int = Field(
+        default=24, ge=1, le=720,
+        description="Hours to consider a user a newcomer after first message",
+    )
+    batch_max_tokens: int = Field(
+        default=3000, ge=500, le=30000,
+        description="Max estimated tokens before auto-flushing batch queue",
+    )
 
+
+class QuotaConfig(BaseModel):
+    """OpenRouter quota management."""
+    daily_limit: int = Field(
+        default=1000, ge=1,
+        description="Max OpenRouter requests per day",
+    )
+    warmup_interval_minutes: int = Field(
+        default=30, ge=5, le=1440,
+        description="Re-warm local LLM every N minutes",
+    )
 
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
-    provider: Literal["openrouter", "local"] = Field(
-        default="openrouter", description="LLM provider"
+    provider: Literal["openrouter", "local", "both"] = Field(
+        default="openrouter", description="LLM provider (openrouter, local, or both for failover)"
     )
     api_key: SecretStr = Field(
         default=SecretStr(""), description="API key (OpenRouter)"
@@ -105,6 +128,7 @@ class AppConfig(BaseSettings):
     telegram: TelegramConfig
     moderation: ModerationConfig = Field(default_factory=ModerationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    quota: QuotaConfig = Field(default_factory=QuotaConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod

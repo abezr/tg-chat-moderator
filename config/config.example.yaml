@@ -10,6 +10,8 @@ moderation:
     - "@your_group_username"
   # Group/channel where flagged messages are forwarded for human review
   review_group: null
+  # Dry run mode: only forward to review group, no actions in main chat
+  dry_run: false
   # Pre-filter: messages matching these patterns are actioned instantly (no LLM call)
   hard_ban_keywords:
     - "buy now cheap"
@@ -23,10 +25,20 @@ moderation:
   context_window_messages: 15
   # Path to the system prompt file
   system_prompt_path: "config/system_prompt.md"
+  # Hours to consider a user a newcomer (instant local LLM evaluation)
+  newcomer_window_hours: 24
+  # Max estimated tokens before auto-flushing batch queue to OpenRouter
+  batch_max_tokens: 3000
+
+quota:
+  # Max OpenRouter requests per day
+  daily_limit: 1000
+  # Re-warm local LLM with system prompt every N minutes
+  warmup_interval_minutes: 30
 
 llm:
-  # "openrouter" or "local"
-  provider: openrouter
+  # "openrouter", "local", or "both" (OpenRouter first, fallback to local on rate-limit)
+  provider: both
   api_key: "your_openrouter_key"
   model: "google/gemini-2.0-flash-001"
   # Only used when provider=local

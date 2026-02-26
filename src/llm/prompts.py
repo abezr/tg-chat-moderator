@@ -68,6 +68,13 @@ class ModerationPromptBuilder:
         """Reload system prompt (hot-reload on config change)."""
         return self.load_system_prompt()
 
+    @property
+    def system_prompt(self) -> str:
+        """Return the loaded system prompt text."""
+        if not self._system_prompt:
+            self.load_system_prompt()
+        return self._system_prompt
+
     def add_context_message(
         self,
         sender_name: str,
