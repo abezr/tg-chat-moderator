@@ -137,7 +137,7 @@ class _Endpoint:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": '{"message":"ping","sender":{"name":"system","username":"","id":0},"context":[],"warnings_count":0}'},
                 ],
-                "max_tokens": 20,
+                "max_tokens": self.max_tokens,
                 "temperature": 0.0,
             }
             response = await self.client.post(
@@ -280,7 +280,13 @@ class LLMClient:
         ep = self._get_endpoint("openrouter")
         if not ep:
             raise RuntimeError("No OpenRouter endpoint configured")
-        return await ep.chat(messages)
+        
+        response = await ep.chat(messages)
+        logger.info(
+            f"LLM [openrouter batch]: {len(response.content)} chars, "
+            f"{response.total_tokens} tokens"
+        )
+        return response
 
     def _get_endpoint(self, name: str) -> Optional[_Endpoint]:
         """Get endpoint by name."""

@@ -40,17 +40,29 @@ class Gateway:
 
     async def start(self) -> None:
         """Register event handlers and start listening."""
-        # Collect group IDs for filtering
-        self._group_ids = {g.id for g in self.monitored_groups}
+        
+        # Calculate every possible integer ID variation for our monitored groups
+        self._allowed_ids = set()
+        for g in self.monitored_groups:
+            self._allowed_ids.add(g.id)
+            self._allowed_ids.add(-g.id)
+            try:
+                self._allowed_ids.add(int(f"-100{g.id}"))
+            except ValueError:
+                pass
+
         group_names = [getattr(g, "title", str(g.id)) for g in self.monitored_groups]
         logger.info(f"Monitoring groups: {', '.join(group_names)}")
+        logger.info(f"Allowed chat IDs: {self._allowed_ids}")
 
         client = self.session.client
 
-        @client.on(events.NewMessage(chats=list(self._group_ids)))
+        # Listen to EVERYTHING, filter manually to avoid Telethon matching bugs
+        @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event):
             """Handle every new message in monitored groups."""
             message = event.message
+            chat_id = getattr(event.chat, 'id', getattr(message, 'chat_id', 0))
 
             # Skip messages from self
             me = self.session.me
@@ -59,6 +71,12 @@ class Gateway:
 
             # Skip empty messages (media-only, service messages)
             if not message.text:
+                return
+
+            # Manual chat filter
+            if chat_id not in self._allowed_ids:
+                # Uncomment to debug ALL private messages/unmonitored groups
+                # logger.debug(f"Ignored message from {chat_id}")
                 return
 
             try:

@@ -7,7 +7,8 @@ telegram:
 moderation:
   # Groups to monitor (usernames or numeric IDs)
   monitored_groups:
-    - "@your_group_username"
+    - "@MyTravelGroup"
+    - "NoEscape_20_ban_test"
   # Group/channel where flagged messages are forwarded for human review
   review_group: null
   # Dry run mode: only forward to review group, no actions in main chat

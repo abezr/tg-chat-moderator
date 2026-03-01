@@ -85,6 +85,7 @@ class ModerationEngine:
         quota_manager: QuotaManager,
         batch_queue: BatchQueue,
         status_reporter: Optional[StatusReporter] = None,
+        admin_ids: Optional[set[int]] = None,
     ):
         self.config = config
         self.llm = llm_client
@@ -95,6 +96,7 @@ class ModerationEngine:
         self.quota = quota_manager
         self.batch = batch_queue
         self.status = status_reporter
+        self.admin_ids = admin_ids or set()
 
         # Pre-filter
         self.pre_filter = PreFilter(
@@ -131,10 +133,17 @@ class ModerationEngine:
         """
         user_id = message.sender_id
         text = message.text or ""
-        chat_title = getattr(chat, "title", str(chat.id))
+        chat_id = getattr(chat, "id", getattr(message, "chat_id", 0))
+        chat_title = getattr(chat, "title", str(chat_id))
 
         # Skip service messages and anonymous channel posts
         if user_id is None:
+            return
+
+        # Skip admin users (unless we are in a test group, where we WANT to test the bot)
+        is_test_group = "test" in str(chat_title).lower() or abs(int(chat_id)) == 5139770999 or abs(int(chat_id)) == 1005139770999
+        if user_id in self.admin_ids and not is_test_group:
+            logger.info(f"Skipping admin user: {user_id} in {chat_title}")
             return
 
         # 0. Extract sender info
@@ -155,7 +164,6 @@ class ModerationEngine:
         )
 
         # 1. Dedup check
-        chat_id = getattr(chat, "id", 0)
         if self.cache.is_processed(chat_id, message.id):
             return
         self.cache.mark_processed(chat_id, message.id)
@@ -165,7 +173,7 @@ class ModerationEngine:
 
         # 3. Cooldown check
         if self._is_on_cooldown(user_id):
-            logger.debug(f"User {user_id} on cooldown, skipping")
+            logger.info(f"User {user_id} on cooldown, skipping")
             return
 
         # 4. Pre-filter (instant, no LLM)
@@ -204,8 +212,12 @@ class ModerationEngine:
         )
 
         # 6. Route: newcomer → instant local | regular → batch
-        if self.newcomer.is_newcomer(user_id) and self.llm.has_local:
-            logger.info(f"🆕 Newcomer {user_id} — instant local LLM evaluation")
+        is_test_group_route = "test" in str(chat_title).lower() or abs(int(chat_id)) == 5139770999 or abs(int(chat_id)) == 1005139770999
+        if (self.newcomer.is_newcomer(user_id) or is_test_group_route) and self.llm.has_local:
+            if is_test_group_route:
+                logger.info(f"🧪 Test group message {user_id} — instant local LLM evaluation")
+            else:
+                logger.info(f"🆕 Newcomer {user_id} — instant local LLM evaluation")
             await self._evaluate_instant(
                 messages, message, chat, chat_title,
                 sender_name, user_id, provider="local",
@@ -312,6 +324,7 @@ class ModerationEngine:
             verdict = verdicts[i] if i < len(verdicts) else {
                 "verdict": "ok", "reason": "missing verdict", "reply": ""
             }
+            logger.info(f"Batch verdict for msg {item.message.id}: {verdict}")
             chat_title = getattr(item.chat, "title", str(getattr(item.chat, "id", 0)))
             await self._apply_verdict(
                 verdict, item.message, item.chat,
@@ -336,13 +349,23 @@ class ModerationEngine:
         user_id: int,
     ) -> None:
         """Apply a parsed verdict to a message."""
-        if verdict["verdict"] == "ok":
-            logger.debug(f"OK: msg={message.id} user={user_id}")
-            return
-
         action = verdict["verdict"]
         reason = verdict.get("reason", "")
         reply_text = verdict.get("reply", "")
+
+        chat_id = getattr(chat, "id", getattr(message, "chat_id", 0))
+        is_test_group = "test" in str(chat_title).lower() or abs(int(chat_id)) == 5139770999 or abs(int(chat_id)) == 1005139770999
+
+        if action == "ok":
+            logger.debug(f"OK: msg={message.id} user={user_id}")
+            
+            # Forward "ok" verdicts from test groups to see the reasoning
+            if is_test_group and self.actions.review_group:
+                await self.actions.forward_to_review(
+                    message, chat_title=chat_title,
+                    verdict="ok [TEST GROUP]", reason=reason,
+                )
+            return
 
         # --- DRY RUN: only forward to review, no actions ---
         if self.dry_run:

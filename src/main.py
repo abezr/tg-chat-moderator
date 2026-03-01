@@ -12,6 +12,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import telethon
 from src.config import load_config, AppConfig
 from src.telegram.client import TelegramSession
 from src.telegram.gateway import Gateway
@@ -134,6 +135,8 @@ async def run(config_path: str | None = None) -> None:
         persist_path="data/newcomers.json",
     )
 
+    admin_ids = set()
+
     # Pre-populate newcomer tracker with existing group members
     # so they're routed to batch queue (OpenRouter), not instant local LLM
     for group in monitored_groups:
@@ -147,8 +150,14 @@ async def run(config_path: str | None = None) -> None:
                     f"Pre-registered {len(member_ids)} members from "
                     f"{getattr(group, 'title', group)}"
                 )
+            
+            # Fetch admins
+            async for admin in session.client.iter_participants(group, filter=telethon.tl.types.ChannelParticipantsAdmins()):
+                admin_ids.add(admin.id)
+            logger.info(f"Loaded {len(admin_ids)} admins in total.")
+
         except Exception as e:
-            logger.warning(f"Could not fetch participants for pre-registration: {e}")
+            logger.warning(f"Could not fetch participants/admins for pre-registration: {e}")
 
     processed_cache = ProcessedCache(max_size=10000)
 
@@ -170,7 +179,7 @@ async def run(config_path: str | None = None) -> None:
         max_batch_tokens=config.moderation.batch_max_tokens,
     )
 
-    # --- Build engine ---
+    # --- Build    # Engine wrapper
     engine = ModerationEngine(
         config=config.moderation,
         llm_client=llm_client,
@@ -181,6 +190,7 @@ async def run(config_path: str | None = None) -> None:
         quota_manager=quota_manager,
         batch_queue=batch_queue,
         status_reporter=status_reporter,
+        admin_ids=admin_ids,
     )
 
     # Wire batch flush callback
