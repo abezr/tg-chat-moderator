@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Optional, Union
 
+import sqlite3
+import asyncio
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat, User
 from telethon.errors import SessionPasswordNeededError
@@ -68,49 +70,56 @@ class TelegramSession:
 
     async def connect(self, code_callback=None, password_callback=None) -> bool:
         """Connect to Telegram and authenticate if needed."""
-        try:
-            logger.info(f"Connecting to Telegram (phone={self.phone})...")
-            await self._client.connect()
-
-            if not await self._client.is_user_authorized():
-                logger.info("Not authorized, starting auth flow...")
-                if not self.phone:
-                    raise ValueError("Phone number is required for authentication")
-
-                await self._client.send_code_request(self.phone)
-
-                if code_callback:
-                    code = await code_callback()
-                else:
-                    code = input("Enter the code you received: ")
-
-                if not code:
-                    raise ValueError("Authentication code cannot be empty")
-
-                try:
-                    await self._client.sign_in(self.phone, code)
-                except SessionPasswordNeededError:
-                    logger.info("2FA required...")
-                    if password_callback:
-                        password = await password_callback()
+        for attempt in range(5):
+            try:
+                logger.info(f"Connecting to Telegram (phone={self.phone})...")
+                await self._client.connect()
+                
+                if not await self._client.is_user_authorized():
+                    logger.info("Not authorized, starting auth flow...")
+                    if not self.phone:
+                        raise ValueError("Phone number is required for authentication")
+                    await self._client.send_code_request(self.phone)
+                    if code_callback:
+                        code = await code_callback()
                     else:
-                        password = input("Enter your 2FA password: ")
-                    if not password:
-                        raise ValueError("2FA password cannot be empty")
-                    await self._client.sign_in(password=password)
+                        code = input("Enter the code you received: ")
+                    if not code:
+                        raise ValueError("Authentication code cannot be empty")
+                    try:
+                        await self._client.sign_in(self.phone, code)
+                    except SessionPasswordNeededError:
+                        logger.info("2FA required...")
+                        if password_callback:
+                            password = await password_callback()
+                        else:
+                            password = input("Enter your 2FA password: ")
+                        if not password:
+                            raise ValueError("2FA password cannot be empty")
+                        await self._client.sign_in(password=password)
+                
+                self._connected = True
+                self._me = await self._client.get_me()
+                logger.info(f"Connected as {self._me.first_name} (@{self._me.username or 'no_user'})")
+                return True
 
-            self._me = await self._client.get_me()
-            if not self._me:
-                raise RuntimeError("Failed to get current user info")
-
-            self._connected = True
-            logger.info(f"Connected as {self._me.first_name} (@{self._me.username})")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to connect: {e}", exc_info=True)
-            self._connected = False
-            raise
+            except sqlite3.OperationalError as e:
+                # SQLite may be locked if another process (or a zombie process) is accessing the session file.
+                # Standard async practice for small SQLite DBs is a retry loop with exponential backoff.
+                if "database is locked" in str(e).lower() and attempt < 4:
+                    logger.warning(f"Database is locked, cleaning up and retrying in 2s ({attempt+1}/5)...")
+                    try:
+                        await self._client.disconnect()
+                    except:
+                        pass
+                    await asyncio.sleep(2)
+                    continue
+                logger.error(f"Failed to connect (SQLite lock): {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Failed to connect: {e}")
+                raise
+        return False
 
     async def disconnect(self) -> None:
         """Disconnect from Telegram gracefully."""

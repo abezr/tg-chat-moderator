@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import httpx
 import time
 from collections import defaultdict
 from typing import Optional, Union
@@ -270,22 +271,44 @@ class ModerationEngine:
     ) -> None:
         """Evaluate a single message instantly via LLM."""
         try:
-            if provider == "local":
-                response = await self.llm.chat_local(messages)
-            elif provider == "openrouter":
-                response = await self.llm.chat_openrouter(messages)
-                self.quota.record_newcomer_request()
-            else:
-                response = await self.llm.chat(messages)
+            try:
+                # First attempt with full context
+                if provider == "local":
+                    response = await self.llm.chat_local(messages)
+                elif provider == "openrouter":
+                    response = await self.llm.chat_openrouter(messages)
+                    self.quota.record_newcomer_request()
+                else:
+                    response = await self.llm.chat(messages)
+            except httpx.HTTPStatusError as e:
+                # If local LLM fails with 400 (context overflow/channel error), retry without context
+                if e.response.status_code == 400:
+                    logger.warning(f"LLM 400 error (likely context overflow), retrying without message context for msg {message.id}...")
+                    # Re-build messages without context
+                    trimmed_messages = self.prompts.build_messages(
+                        message_text=message.text or "",
+                        sender_name=sender_name,
+                        sender_username=sender_username,
+                        sender_id=user_id,
+                        warnings_count=self._user_warnings.get(user_id, 0),
+                        include_context=False
+                    )
+                    if provider == "local":
+                        response = await self.llm.chat_local(trimmed_messages)
+                    elif provider == "openrouter":
+                        response = await self.llm.chat_openrouter(trimmed_messages)
+                    else:
+                        response = await self.llm.chat(trimmed_messages)
+                else:
+                    raise
 
             verdict = self._parse_verdict(response.content)
+            await self._apply_verdict(
+                verdict, message, chat, chat_title, sender_name, user_id
+            )
         except Exception as e:
             logger.error(f"LLM analysis failed for msg {message.id}: {e}")
             return  # Fail-open
-
-        await self._apply_verdict(
-            verdict, message, chat, chat_title, sender_name, user_id
-        )
 
     async def handle_batch_flush(self, batch: BatchQueue) -> None:
         """

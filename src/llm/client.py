@@ -108,8 +108,12 @@ class _Endpoint:
         )
 
         if response.status_code == 400:
-            logger.error(f"{self.name} Bad Request: {response.text}")
-            raise httpx.HTTPStatusError("Bad Request", request=response.request, response=response)
+            error_data = response.text
+            logger.error(f"{self.name} Bad Request: {error_data}")
+            
+            # If it's a context overflow or channel error, we might want to retry or fail over
+            # But 400 is normally a "client error", so we should be careful not to loop infinitely
+            raise httpx.HTTPStatusError(f"Bad Request: {error_data}", request=response.request, response=response)
 
         if response.status_code == 429:
             raise RateLimitError(f"{self.name}: 429 Too Many Requests")
@@ -257,11 +261,19 @@ class LLMClient:
 
                 except httpx.HTTPStatusError as e:
                     last_error = e
+                    # For local LLMs, a 400 "Channel Error" or context issue might be resolved by a re-warmup or retry
+                    if ep.name == "local" and e.response.status_code == 400:
+                        logger.warning(f"Local LLM returned 400 (context/channel error). Attempting re-warmup...")
+                        await ep.warm_up(messages[0].content if messages and messages[0].role == MessageRole.SYSTEM else "")
+                        await asyncio.sleep(2)
+                        if attempt < self.max_retries - 1:
+                            continue
+                    
                     if e.response.status_code >= 500:
                         logger.warning(f"{ep.name}: server error {e.response.status_code}")
                         await asyncio.sleep(2 ** attempt)
                     else:
-                        raise  # 4xx (non-429) are real errors
+                        raise  # 4xx (non-429, non-local-400) are real errors
 
                 except Exception as e:
                     last_error = e

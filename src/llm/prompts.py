@@ -97,6 +97,7 @@ class ModerationPromptBuilder:
         sender_username: Optional[str] = None,
         sender_id: Optional[int] = None,
         warnings_count: int = 0,
+        include_context: bool = True,
     ) -> List[Message]:
         """
         Build the message list for an LLM moderation request.
@@ -122,7 +123,7 @@ class ModerationPromptBuilder:
                 "username": sender_username or "",
                 "id": sender_id or 0,
             },
-            "context": [m.to_dict() for m in self._context_buffer],
+            "context": [m.to_dict() for m in self._context_buffer] if include_context else [],
             "warnings_count": warnings_count,
         }
 
