@@ -24,6 +24,8 @@ from src.moderation.cache import ProcessedCache
 from src.moderation.engine import ModerationEngine
 from src.moderation.newcomer import NewcomerTracker
 from src.moderation.quota import QuotaManager
+from src.moderation.reputation import UserReputation
+from src.moderation.reports import ReportGenerator
 from src.moderation.status import StatusReporter
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,26 @@ async def _warmup_loop(
                 stop_event.wait(),
                 timeout=interval_minutes * 60,
             )
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _report_loop(
+    generator: ReportGenerator,
+    action_executor: ActionExecutor,
+    stop_event: asyncio.Event,
+) -> None:
+    """Periodically send moderation reports (daily/weekly)."""
+    while not stop_event.is_set():
+        # Check if it's a new day or week (simplified check for now)
+        # In a real app, this would use CRON or check specific hours
+        # For this prototype, we'll just check every hour if a report is due
+        
+        # TODO: More sophisticated scheduling if needed
+        # For now, we'll just expose a manual trigger or wait for a specific flag
+        
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=3600)
         except asyncio.TimeoutError:
             pass
 
@@ -179,6 +201,14 @@ async def run(config_path: str | None = None) -> None:
         max_batch_tokens=config.moderation.batch_max_tokens,
     )
 
+    reputation = UserReputation(
+        persist_path=config.reputation.persist_path,
+        trusted_min_days=config.reputation.trusted_min_days,
+        trusted_min_messages=config.reputation.trusted_min_messages,
+    )
+
+    report_generator = ReportGenerator(reputation=reputation)
+
     # --- Build    # Engine wrapper
     engine = ModerationEngine(
         config=config.moderation,
@@ -186,6 +216,8 @@ async def run(config_path: str | None = None) -> None:
         prompt_builder=prompt_builder,
         action_executor=action_executor,
         newcomer_tracker=newcomer_tracker,
+        reputation=reputation,
+        report_generator=report_generator,
         processed_cache=processed_cache,
         quota_manager=quota_manager,
         batch_queue=batch_queue,
@@ -241,6 +273,11 @@ async def run(config_path: str | None = None) -> None:
                 )
             ))
 
+        # Report loop
+        tasks.append(asyncio.create_task(
+            _report_loop(report_generator, action_executor, stop_event)
+        ))
+
         # Initial status update (also finds existing pinned message)
         if status_reporter:
             await status_reporter.update(
@@ -256,6 +293,7 @@ async def run(config_path: str | None = None) -> None:
     finally:
         stop_event.set()
         newcomer_tracker.save()
+        reputation.save()
         quota_manager.save()
         await llm_client.close()
         await session.disconnect()

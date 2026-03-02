@@ -24,6 +24,21 @@ class TelegramConfig(BaseModel):
     session_name: str = Field(default="moderator_bot", description="Session file name")
 
 
+class ReputationConfig(BaseModel):
+    """User reputation and trust system configuration."""
+    enabled: bool = Field(default=True)
+    persist_path: str = Field(default="data/user_reputation.json")
+    trusted_min_days: int = Field(default=7, ge=1)
+    trusted_min_messages: int = Field(default=50, ge=1)
+
+
+class ReportConfig(BaseModel):
+    """Moderation reports configuration."""
+    daily: bool = Field(default=True)
+    weekly: bool = Field(default=True)
+
+
+
 class ModerationConfig(BaseModel):
     """Moderation behavior configuration."""
     monitored_groups: list[str] = Field(
@@ -129,6 +144,8 @@ class AppConfig(BaseSettings):
     moderation: ModerationConfig = Field(default_factory=ModerationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
+    reputation: ReputationConfig = Field(default_factory=ReputationConfig)
+    reports: ReportConfig = Field(default_factory=ReportConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod

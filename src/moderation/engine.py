@@ -27,6 +27,8 @@ from src.moderation.batch import BatchQueue, QueuedMessage
 from src.moderation.cache import ProcessedCache
 from src.moderation.newcomer import NewcomerTracker
 from src.moderation.quota import QuotaManager
+from src.moderation.reputation import UserReputation
+from src.moderation.reports import ReportGenerator
 from src.moderation.status import StatusReporter
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,8 @@ class ModerationEngine:
         prompt_builder: ModerationPromptBuilder,
         action_executor: ActionExecutor,
         newcomer_tracker: NewcomerTracker,
+        reputation: UserReputation,
+        report_generator: ReportGenerator,
         processed_cache: ProcessedCache,
         quota_manager: QuotaManager,
         batch_queue: BatchQueue,
@@ -92,6 +96,8 @@ class ModerationEngine:
         self.prompts = prompt_builder
         self.actions = action_executor
         self.newcomer = newcomer_tracker
+        self.reputation = reputation
+        self.reports = report_generator
         self.cache = processed_cache
         self.quota = quota_manager
         self.batch = batch_queue
@@ -139,6 +145,9 @@ class ModerationEngine:
         # Skip service messages and anonymous channel posts
         if user_id is None:
             return
+
+        # Record activity for reputation tracking
+        self.reputation.update_activity(user_id)
 
         # Skip admin users (unless we are in a test group, where we WANT to test the bot)
         is_test_group = "test" in str(chat_title).lower() or abs(int(chat_id)) == 5139770999 or abs(int(chat_id)) == 1005139770999
@@ -352,6 +361,10 @@ class ModerationEngine:
         action = verdict["verdict"]
         reason = verdict.get("reason", "")
         reply_text = verdict.get("reply", "")
+        rule = verdict.get("rule", "general")
+
+        # Record for reports
+        self.reports.record_verdict(action)
 
         chat_id = getattr(chat, "id", getattr(message, "chat_id", 0))
         is_test_group = "test" in str(chat_title).lower() or abs(int(chat_id)) == 5139770999 or abs(int(chat_id)) == 1005139770999
@@ -387,6 +400,20 @@ class ModerationEngine:
 
         # --- LIVE MODE: take real actions ---
         self._record_action(user_id)
+
+        # Check if trusted user - if so, don't auto-ban/mute, just log strike
+        if self.reputation.is_trusted(user_id) and action in ("ban", "mute", "delete"):
+            logger.info(f"⚠️ Trusted user {user_id} triggered {action} — downgrading to strike.")
+            self.reputation.add_strike(user_id, rule, reason, message.text or "")
+            
+            if self.actions.review_group:
+                await self.actions.forward_to_review(
+                    message,
+                    chat_title=chat_title,
+                    verdict=f"STRIKE ({action} bypassed)",
+                    reason=f"Trusted user violation of {rule}: {reason}",
+                )
+            return
 
         if action == "warn":
             self._user_warnings[user_id] += 1

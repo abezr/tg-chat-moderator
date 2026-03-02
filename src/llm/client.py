@@ -93,12 +93,12 @@ class _Endpoint:
             follow_redirects=True,
         )
 
-    async def chat(self, messages: List[Message]) -> ChatResponse:
+    async def chat(self, messages: List[Message], max_tokens: Optional[int] = None) -> ChatResponse:
         """Send request to this endpoint. Raises on failure."""
         payload = {
             "model": self.model,
             "messages": [m.to_dict() for m in messages],
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
             "temperature": self.temperature,
         }
 
@@ -106,6 +106,10 @@ class _Endpoint:
             f"{self.base_url}/chat/completions",
             json=payload,
         )
+
+        if response.status_code == 400:
+            logger.error(f"{self.name} Bad Request: {response.text}")
+            raise httpx.HTTPStatusError("Bad Request", request=response.request, response=response)
 
         if response.status_code == 429:
             raise RateLimitError(f"{self.name}: 429 Too Many Requests")
@@ -137,8 +141,8 @@ class _Endpoint:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": '{"message":"ping","sender":{"name":"system","username":"","id":0},"context":[],"warnings_count":0}'},
                 ],
-                "max_tokens": self.max_tokens,
-                "temperature": 0.0,
+                "max_tokens": 100,  # Small response for warm-up
+                "temperature": 0.1,
             }
             response = await self.client.post(
                 f"{self.base_url}/chat/completions",
@@ -148,7 +152,7 @@ class _Endpoint:
                 logger.info(f"✅ {self.name} warmed up (system prompt cached)")
                 return True
             else:
-                logger.warning(f"Warm-up got status {response.status_code}")
+                logger.warning(f"Warm-up got status {response.status_code}: {response.text}")
                 return False
         except Exception as e:
             logger.warning(f"Warm-up failed for {self.name}: {e}")
@@ -217,7 +221,7 @@ class LLMClient:
             f"endpoints={[e.name for e in self._endpoints]}"
         )
 
-    async def chat(self, messages: List[Message]) -> ChatResponse:
+    async def chat(self, messages: List[Message], max_tokens: Optional[int] = None) -> ChatResponse:
         """
         Send chat completion request with failover.
 
@@ -230,7 +234,7 @@ class LLMClient:
             for attempt in range(self.max_retries):
                 try:
                     logger.debug(f"Trying {ep.name} (attempt {attempt + 1})")
-                    response = await ep.chat(messages)
+                    response = await ep.chat(messages, max_tokens=max_tokens)
                     logger.info(
                         f"LLM [{ep.name}]: {len(response.content)} chars, "
                         f"{response.total_tokens} tokens"
@@ -268,20 +272,23 @@ class LLMClient:
             f"All LLM endpoints failed after exhausting retries: {last_error}"
         )
 
-    async def chat_local(self, messages: List[Message]) -> ChatResponse:
-        """Send request directly to local endpoint only (for newcomer fast-path)."""
+    async def chat_local(self, messages: List[Message], max_tokens: int = 1000) -> ChatResponse:
+        """
+        Send request directly to local endpoint only (for newcomer fast-path).
+        Defaults to a lower max_tokens (1000) to avoid context overflow.
+        """
         ep = self._get_endpoint("local")
         if not ep:
             raise RuntimeError("No local endpoint configured")
-        return await ep.chat(messages)
+        return await ep.chat(messages, max_tokens=max_tokens)
 
-    async def chat_openrouter(self, messages: List[Message]) -> ChatResponse:
+    async def chat_openrouter(self, messages: List[Message], max_tokens: Optional[int] = None) -> ChatResponse:
         """Send request directly to OpenRouter only (for batch flush)."""
         ep = self._get_endpoint("openrouter")
         if not ep:
             raise RuntimeError("No OpenRouter endpoint configured")
         
-        response = await ep.chat(messages)
+        response = await ep.chat(messages, max_tokens=max_tokens)
         logger.info(
             f"LLM [openrouter batch]: {len(response.content)} chars, "
             f"{response.total_tokens} tokens"
