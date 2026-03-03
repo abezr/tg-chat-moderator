@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +52,8 @@ class ModerationPromptBuilder:
         self.context_window = context_window
         self._system_prompt: Optional[str] = None
         self._context_buffer: deque[MessageContext] = deque(maxlen=context_window)
+        # Unique session ID to bust KV caches (like LM Studio) on every bot restart
+        self._session_id = str(int(time.time()))
 
     def load_system_prompt(self) -> str:
         """Load system prompt from markdown file."""
@@ -127,8 +131,13 @@ class ModerationPromptBuilder:
             "warnings_count": warnings_count,
         }
 
+        # Add a version hash to the system prompt to bust LLM KV caches (like LM Studio).
+        # We include a session ID to ensure a fresh cache even if the prompt file hasn't changed.
+        prompt_hash = hashlib.md5(f"{self._system_prompt}-{self._session_id}".encode("utf-8")).hexdigest()[:8]
+        system_content = f"{self._system_prompt}\n\n[Session: {self._session_id}, Hash: {prompt_hash}]"
+
         return [
-            Message.system(self._system_prompt),
+            Message.system(system_content),
             Message.user(json.dumps(user_payload, ensure_ascii=False)),
         ]
 
