@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Literal
+from typing import Optional, List, Dict
 from enum import Enum
 
 import httpx
@@ -239,6 +239,11 @@ class LLMClient:
                 try:
                     logger.debug(f"Trying {ep.name} (attempt {attempt + 1})")
                     response = await ep.chat(messages, max_tokens=max_tokens)
+                    
+                    if response.content is None:
+                        logger.error(f"{ep.name}: response.content is None, failing over...")
+                        continue
+                    
                     logger.info(
                         f"LLM [{ep.name}]: {len(response.content)} chars, "
                         f"{response.total_tokens} tokens"
@@ -263,7 +268,7 @@ class LLMClient:
                     last_error = e
                     # For local LLMs, a 400 "Channel Error" or context issue might be resolved by a re-warmup or retry
                     if ep.name == "local" and e.response.status_code == 400:
-                        logger.warning(f"Local LLM returned 400 (context/channel error). Attempting re-warmup...")
+                        logger.warning("Local LLM returned 400 (context/channel error). Attempting re-warmup...")
                         await ep.warm_up(messages[0].content if messages and messages[0].role == MessageRole.SYSTEM else "")
                         await asyncio.sleep(2)
                         if attempt < self.max_retries - 1:
@@ -301,6 +306,11 @@ class LLMClient:
             raise RuntimeError("No OpenRouter endpoint configured")
         
         response = await ep.chat(messages, max_tokens=max_tokens)
+        
+        if response.content is None:
+            logger.error("LLM [openrouter batch]: response.content is None")
+            raise RuntimeError("OpenRouter returned empty response (content is None)")
+        
         logger.info(
             f"LLM [openrouter batch]: {len(response.content)} chars, "
             f"{response.total_tokens} tokens"

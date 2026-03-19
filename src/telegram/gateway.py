@@ -8,7 +8,7 @@ incoming messages to the moderation engine.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Union
+from typing import Union
 
 from telethon import events
 from telethon.tl.types import Channel, Chat

@@ -28,6 +28,7 @@ class QueuedMessage:
     message: object        # Telethon Message
     chat: Union[Chat, Channel]
     sender_name: str
+    sender_username: Optional[str]  # Telegram @username
     user_id: int
     enqueued_at: float = field(default_factory=time.time)
 
@@ -66,6 +67,7 @@ class BatchQueue:
         message,
         chat: Union[Chat, Channel],
         sender_name: str,
+        sender_username: Optional[str],
         user_id: int,
     ) -> None:
         """Add a message to the batch queue."""
@@ -75,6 +77,7 @@ class BatchQueue:
                 message=message,
                 chat=chat,
                 sender_name=sender_name,
+                sender_username=sender_username,
                 user_id=user_id,
             )
             self._queue.append(item)
@@ -190,14 +193,27 @@ class BatchQueue:
         # Strip markdown fences
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             cleaned = "\n".join(lines).strip()
+
+        # Helper to gently coerce strings/other types to dict
+        def _ensure_dicts(items: list) -> list[dict]:
+            valid = []
+            for item in items:
+                if isinstance(item, dict):
+                    valid.append(item)
+                elif isinstance(item, str):
+                    # If model returned `["ok"]` instead of `[{"verdict": "ok"}]`
+                    valid.append({"verdict": item, "reason": "parsed string instead of dict", "reply": ""})
+                else:
+                    valid.append({"verdict": "ok", "reason": "parsed invalid element format", "reply": ""})
+            return valid
 
         # Try parsing as JSON array
         try:
             result = json.loads(cleaned)
             if isinstance(result, list):
-                return result
+                return _ensure_dicts(result)
         except json.JSONDecodeError:
             pass
 
@@ -207,7 +223,7 @@ class BatchQueue:
             try:
                 result = json.loads(match.group())
                 if isinstance(result, list):
-                    return result
+                    return _ensure_dicts(result)
             except json.JSONDecodeError:
                 pass
 

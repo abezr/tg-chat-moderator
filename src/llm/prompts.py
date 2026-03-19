@@ -12,9 +12,9 @@ import logging
 import hashlib
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 from src.llm.client import Message
 
@@ -46,7 +46,7 @@ class ModerationPromptBuilder:
     def __init__(
         self,
         system_prompt_path: str = "config/system_prompt.md",
-        context_window: int = 15,
+        context_window: int = 5,
     ):
         self.system_prompt_path = Path(system_prompt_path)
         self.context_window = context_window

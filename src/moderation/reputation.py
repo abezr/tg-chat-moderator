@@ -1,7 +1,6 @@
 import json
 import logging
 import time
-from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional

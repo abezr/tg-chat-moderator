@@ -24,7 +24,7 @@ from src.config import ModerationConfig
 from src.llm.client import LLMClient
 from src.llm.prompts import ModerationPromptBuilder
 from src.moderation.actions import ActionExecutor
-from src.moderation.batch import BatchQueue, QueuedMessage
+from src.moderation.batch import BatchQueue
 from src.moderation.cache import ProcessedCache
 from src.moderation.newcomer import NewcomerTracker
 from src.moderation.quota import QuotaManager
@@ -33,6 +33,106 @@ from src.moderation.reports import ReportGenerator
 from src.moderation.status import StatusReporter
 
 logger = logging.getLogger(__name__)
+
+# Call-to-action patterns (always ban) - these match imperative/encouraging forms only, not news stories
+VIOLENCE_PATTERNS = [
+    r"надо\s+убива",       # "надо убивать" - we should kill
+    r"нужно\s+убива",      # "нужно убить" - need to kill
+    r"давайте\s+убива",    # "давайте убьем" - let's kill
+    r"убивать\s+мерзавц",  # "убивать мерзавцев" - kill the bastards
+    r"убить\s+мерзавц",    # "убить мерзавцев" - kill the bastards
+    r"подсократить\s+поголов",  # "подсократить поголовье" - reduce population
+    r"убивать\s+люд",      # "убивать людей" - kill people
+    r"убью\b",              # "убью" (I will kill) - direct threat
+    r"убьём\b",             # "убьём" (we will kill) - group threat
+    r"ножом\s+по",         # "ножом по" - knife attack
+    r"нож\s+по",           # "нож по" - knife attack
+]
+
+# Quote/report indicators - if present, the message is reporting what someone else said (not a call to action)
+# These patterns SKIP the violence check - they indicate the writer is REPORTING, not advocating
+QUOTE_INDICATORS = [
+    r"сказал\b", r"сказала\b", r"говорят\b", r"по\s+словам\b",
+    r"сообщает\b", r"сообщил\b", r"сообщила\b", r"пишет\b", r"пишут\b",
+    r"утверждает\b", r"заявил\b", r"заявила\b", r"заявили\b",
+    r"цитирует\b", r"цитата\b", r"引用\b",  # quote in Chinese too
+    r'"[^"]+"',  # "quoted text"
+]
+
+
+# Compile patterns at module level for efficiency
+VIOLENCE_COMPILED_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in VIOLENCE_PATTERNS]
+QUOTE_COMPILED_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in QUOTE_INDICATORS]
+
+
+def _check_violence_keyword_filter(text: str) -> dict | None:
+    """Pre-filter for violent call-to-action content - runs BEFORE LLM.
+    
+    Uses regex patterns to distinguish between:
+    - CALL TO ACTION (ban): "надо убивать мерзавцев" - encouraging/imperative forms
+    - NEWS STORY (allow): "он убил преступника" - past tense, news reporting
+    - REPORTING (allow): "Путин сказал, что надо убивать..." - quoting what someone said
+    - QUOTED VIOLENCE (allow): 'Он заявил: "надо убивать"' - violence inside quotes
+    
+    Returns:
+    - dict with verdict "ok" and reason "quoted_speech" or "reported_speech" when content is allowed
+    - dict with verdict "ban" when violence call-to-action detected
+    - None when no violence patterns found at all
+    """
+    # Find all violence pattern matches with their positions
+    violence_matches = []
+    for pattern in VIOLENCE_COMPILED_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            violence_matches.append((match.start(), match.end(), match.group()))
+    
+    if not violence_matches:
+        # No violence patterns found - allow (no filter needed)
+        return None
+    
+    # Check if violence is inside quotation marks - if so, it's a quote, not a call to action
+    # Find all quoted sections (text between "...")
+    quote_pattern = re.compile(r'"([^"]+)"', re.IGNORECASE)
+    quoted_sections = []
+    for match in quote_pattern.finditer(text):
+        quoted_sections.append((match.start(), match.end(), match.group(1)))
+    
+    # Check if any violence match is inside a quoted section
+    for v_start, v_end, v_group in violence_matches:
+        is_inside_quote = False
+        for q_start, q_end, q_content in quoted_sections:
+            # Check if the violence match is within the quote boundaries
+            if q_start < v_start and v_end < q_end:
+                is_inside_quote = True
+                break
+        if is_inside_quote:
+            # Violence is inside quotes - this is a quote/report, not a call to action
+            # Return "ok" verdict to SKIP LLM evaluation entirely
+            logger.info(f"Violence inside quotes detected - allowing (skip LLM): {text[:50]}...")
+            return {"verdict": "ok", "reason": "quoted_speech", "reply": ""}
+    
+    # Find all quote indicator matches with their positions (for non-quoted violence)
+    quote_matches = []
+    for pattern in QUOTE_COMPILED_PATTERNS:
+        for match in pattern.finditer(text):
+            quote_matches.append(match.start())
+    
+    # If there's a quote indicator BEFORE the first violence match, it's reporting - allow
+    if quote_matches:
+        min_violence_pos = min(vm[0] for vm in violence_matches)
+        min_quote_pos = min(quote_matches)
+        if min_quote_pos < min_violence_pos:
+            # Quote indicator appears before violence - this is a story/report
+            # Return "ok" verdict to SKIP LLM evaluation entirely
+            logger.info(f"Quote indicator before violence - allowing (skip LLM): {text[:50]}...")
+            return {"verdict": "ok", "reason": "reported_speech", "reply": ""}
+    
+    # No quote indicator before violence, or no quote indicator at all - it's a call to action - ban
+    return {
+        "verdict": "ban",
+        "reason": f"VIOLENCE_PATTERN_DETECTED: {text[:50]}...",
+        "reply": "Ваше повідомлення містить заклики до насильства. Це неприйнятно."
+    }
 
 
 class PreFilter:
@@ -230,7 +330,7 @@ class ModerationEngine:
                 logger.info(f"🆕 Newcomer {user_id} — instant local LLM evaluation")
             await self._evaluate_instant(
                 messages, message, chat, chat_title,
-                sender_name, user_id, provider="local",
+                sender_name, sender_username, user_id, provider="local",
             )
         elif self.llm.has_openrouter:
             # Add to batch queue
@@ -249,6 +349,7 @@ class ModerationEngine:
                 message=message,
                 chat=chat,
                 sender_name=sender_name or "Unknown",
+                sender_username=sender_username,
                 user_id=user_id,
             )
             logger.debug(f"📦 Regular user {user_id} — queued for batch")
@@ -256,7 +357,7 @@ class ModerationEngine:
             # Fallback: direct evaluation with whatever is available
             await self._evaluate_instant(
                 messages, message, chat, chat_title,
-                sender_name, user_id, provider="any",
+                sender_name, sender_username, user_id, provider="any",
             )
 
     async def _evaluate_instant(
@@ -266,10 +367,33 @@ class ModerationEngine:
         chat,
         chat_title: str,
         sender_name: str,
+        sender_username: Optional[str],
         user_id: int,
         provider: str = "any",
     ) -> None:
         """Evaluate a single message instantly via LLM."""
+        # Pre-filter check for violent keywords (runs BEFORE LLM)
+        violence_filter_result = _check_violence_keyword_filter(message.text or "")
+        
+        # Check if pre-filter returned an explicit "ok" verdict (quote/report detected)
+        # In this case, skip LLM evaluation entirely and return immediately
+        if violence_filter_result and violence_filter_result.get("verdict") == "ok":
+            reason = violence_filter_result.get("reason", "")
+            logger.info(f"Pre-filter allowed (skipping LLM): {reason} - {message.text[:50]}...")
+            # Still apply the verdict to handle logging and test group forwarding
+            await self._apply_verdict(
+                violence_filter_result, message, chat, chat_title, sender_name, user_id
+            )
+            return
+        
+        # If pre-filter returned a ban verdict, apply it and skip LLM
+        if violence_filter_result and violence_filter_result.get("verdict") == "ban":
+            logger.info(f"Violence keyword pre-filter hit: {violence_filter_result['reason']}")
+            await self._apply_verdict(
+                violence_filter_result, message, chat, chat_title, sender_name, user_id
+            )
+            return
+
         try:
             try:
                 # First attempt with full context
@@ -307,55 +431,112 @@ class ModerationEngine:
                 verdict, message, chat, chat_title, sender_name, user_id
             )
         except Exception as e:
-            logger.error(f"LLM analysis failed for msg {message.id}: {e}")
+            # Log full exception details including traceback
+            logger.exception(f"LLM analysis failed for msg {message.id}: {type(e).__name__}: {e}")
+            
+            # Fallback: if local LLM failed and OpenRouter is available, try OpenRouter
+            if provider == "local" and self.llm.has_openrouter:
+                logger.info(f"Falling back to OpenRouter for msg {message.id} after local LLM failure")
+                try:
+                    # Re-build messages without context for the fallback
+                    fallback_messages = self.prompts.build_messages(
+                        message_text=message.text or "",
+                        sender_name=sender_name,
+                        sender_username=sender_username,
+                        sender_id=user_id,
+                        warnings_count=self._user_warnings.get(user_id, 0),
+                        include_context=False
+                    )
+                    response = await self.llm.chat_openrouter(fallback_messages)
+                    self.quota.record_newcomer_request()
+                    verdict = self._parse_verdict(response.content)
+                    await self._apply_verdict(
+                        verdict, message, chat, chat_title, sender_name, user_id
+                    )
+                    logger.info(f"OpenRouter fallback succeeded for msg {message.id}")
+                    return
+                except Exception as fallback_error:
+                    logger.exception(f"OpenRouter fallback also failed for msg {message.id}: {type(fallback_error).__name__}: {fallback_error}")
+            
             return  # Fail-open
 
     async def handle_batch_flush(self, batch: BatchQueue) -> None:
         """
         Called when the batch queue is flushed.
         Sends accumulated messages to OpenRouter and processes verdicts.
+
+        OPTIMIZATION: Check pre-filter FIRST and skip LLM for known quote cases.
         """
         items = await batch.drain()
         if not items:
             return
 
-        logger.info(f"📤 Flushing batch: {len(items)} messages")
+        logger.info(f"Flushing batch: {len(items)} messages")
 
-        # Build batch prompt
-        batch_prompt_text = BatchQueue.build_batch_prompt(items)
+        # Pre-filter check FIRST - separate items into needs-llm and skip-llm
+        items_needing_llm = []
+        items_skipped = []
 
-        # Build messages with batch instruction
-        system_prompt = self.prompts.system_prompt
-        batch_instruction = (
-            "\n\n---\n"
-            "BATCH MODE: You will receive an array of messages. "
-            "Return a JSON ARRAY of verdicts, one per message, "
-            "in the same order. Each verdict has the same format: "
-            '{"verdict": "ok"|"warn"|"delete"|"mute"|"ban", '
-            '"reason": "...", "reply": "...", "index": N}'
-        )
+        for item in items:
+            # Check pre-filter BEFORE LLM
+            violence_filter_result = _check_violence_keyword_filter(item.message.text or "")
+            if violence_filter_result:
+                # Pre-filter has a verdict - use it and skip LLM
+                logger.info(f"Pre-filter skip LLM (batch): {violence_filter_result.get('reason', 'unknown')} - {item.message.text[:50]}...")
+                items_skipped.append((item, violence_filter_result))
+            else:
+                # No pre-filter match - needs LLM evaluation
+                items_needing_llm.append(item)
 
-        from src.llm.client import Message as LLMMessage
-        messages = [
-            LLMMessage.system(system_prompt + batch_instruction),
-            LLMMessage.user(batch_prompt_text),
-        ]
+        # Process items that need LLM (if any)
+        verdicts = {}
+        if items_needing_llm:
+            # Build batch prompt only for items needing LLM
+            batch_prompt_text = BatchQueue.build_batch_prompt(items_needing_llm)
 
-        try:
-            response = await self.llm.chat_openrouter(messages)
-            self.quota.record_batch_request()
-            verdicts = BatchQueue.parse_batch_verdicts(
-                response.content, len(items)
+            # Build messages with batch instruction
+            system_prompt = self.prompts.system_prompt
+            batch_instruction = (
+                "\n\n---"
+                "BATCH MODE: You will receive an array of messages. "
+                "Return a JSON ARRAY of verdicts, one per message, "
+                "in the same order. Each verdict has the same format: "
+                '{"verdict": "ok"|"warn"|"delete"|"mute"|"ban", '
+                '"reason": "...", "reply": "...", "index": N}"'
             )
-        except Exception as e:
-            logger.error(f"Batch LLM call failed: {e}")
-            return
 
-        # Apply verdicts
-        for i, item in enumerate(items):
-            verdict = verdicts[i] if i < len(verdicts) else {
-                "verdict": "ok", "reason": "missing verdict", "reply": ""
-            }
+            from src.llm.client import Message as LLMMessage
+            messages = [
+                LLMMessage.system(system_prompt + batch_instruction),
+                LLMMessage.user(batch_prompt_text),
+            ]
+
+            try:
+                response = await self.llm.chat_openrouter(messages)
+                self.quota.record_batch_request()
+                llm_verdicts = BatchQueue.parse_batch_verdicts(
+                    response.content, len(items_needing_llm)
+                )
+                # Map verdicts back to original indices
+                for idx, item in enumerate(items_needing_llm):
+                    verdicts[item.message.id] = llm_verdicts[idx] if idx < len(llm_verdicts) else {
+                        "verdict": "ok", "reason": "missing verdict", "reply": ""
+                    }
+            except Exception as e:
+                logger.error(f"Batch LLM call failed: {e}")
+                # For failed LLM, use ok verdict
+                for item in items_needing_llm:
+                    verdicts[item.message.id] = {"verdict": "ok", "reason": "llm_failed", "reply": ""}
+
+        # Apply verdicts to all items (both skipped and LLM-processed)
+        for item in items:
+            # Check if this item was pre-filtered
+            prefilter_result = next((vf for i, vf in items_skipped if i.message.id == item.message.id), None)
+            if prefilter_result:
+                verdict = prefilter_result
+            else:
+                verdict = verdicts.get(item.message.id, {"verdict": "ok", "reason": "missing", "reply": ""})
+
             logger.info(f"Batch verdict for msg {item.message.id}: {verdict}")
             chat_title = getattr(item.chat, "title", str(getattr(item.chat, "id", 0)))
             await self._apply_verdict(
@@ -486,13 +667,30 @@ class ModerationEngine:
     def _parse_verdict(raw: str) -> dict:
         """Parse the LLM's JSON verdict response."""
         cleaned = raw.strip()
+        
+        # Handle simple "ok" text response (treat as valid ok verdict)
+        if cleaned.lower() == "ok":
+            return {"verdict": "ok", "reason": "Simple ok response", "reply": ""}
+        
+        # Strip markdown code blocks
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             cleaned = "\n".join(lines).strip()
 
+        # Try parsing as JSON
         try:
-            return json.loads(cleaned)
+            result = json.loads(cleaned)
+            
+            # Handle case where JSON is valid but missing 'verdict' field
+            if "verdict" not in result:
+                # If it only has 'role' field, the LLM is confused - treat as ok
+                if "role" in result and len(result) == 1:
+                    return {"verdict": "ok", "reason": "LLM returned role instead of verdict", "reply": ""}
+                # If it has some other structure but no verdict, treat as ok
+                return {"verdict": "ok", "reason": "Missing verdict field in response", "reply": ""}
+            
+            return result
         except json.JSONDecodeError:
             pass
 
@@ -500,9 +698,19 @@ class ModerationEngine:
         match = re.search(r'\{.*\}', cleaned, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group())
+                result = json.loads(match.group())
+                if "verdict" not in result:
+                    if "role" in result and len(result) == 1:
+                        return {"verdict": "ok", "reason": "LLM returned role instead of verdict", "reply": ""}
+                    return {"verdict": "ok", "reason": "Missing verdict field in extracted JSON", "reply": ""}
+                return result
             except json.JSONDecodeError:
                 pass
+
+        # Check if the response is a plain string (no JSON structure)
+        if not match and cleaned and not cleaned.startswith("{"):
+            logger.warning(f"LLM returned plain string instead of JSON: {cleaned}")
+            return {"verdict": "ok", "reason": f"llm_plain_string: {cleaned[:100]}", "reply": ""}
 
         logger.warning(f"Failed to parse LLM verdict, treating as 'ok'. Raw response: {raw}")
         return {"verdict": "ok", "reason": "unparseable LLM response", "reply": ""}

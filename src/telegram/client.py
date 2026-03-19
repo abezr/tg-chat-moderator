@@ -110,7 +110,7 @@ class TelegramSession:
                     logger.warning(f"Database is locked, cleaning up and retrying in 2s ({attempt+1}/5)...")
                     try:
                         await self._client.disconnect()
-                    except:
+                    except Exception:
                         pass
                     await asyncio.sleep(2)
                     continue

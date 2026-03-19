@@ -1,8 +1,7 @@
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
 from src.moderation.reputation import UserReputation
 
 logger = logging.getLogger(__name__)
