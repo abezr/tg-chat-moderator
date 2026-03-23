@@ -582,8 +582,43 @@ FALSE_POSITIVE_CASES = [
         "sender": "Док",
         "expected_verdict": "ok",
         "description": "Non-competing Telegram group (hiking community) should be OK"
-    }
-]
+    },
+    {
+        "name": "Insect and Laser Camera Detector Link",
+        "text": "https://example.com/insect-laser-camera-detector",
+        "sender": "TestUser",
+        "expected_verdict": "ok",
+        "description": "Link to insect and laser camera detector - should be OK as safety/privacy device"
+    },
+    {
+        "name": "Insect and Laser Camera Detector with Text",
+        "text": "Перевірте цей детектор комах та лазерних камер: https://example.com/insect-laser-camera-detector",
+        "sender": "TestUser",
+        "expected_verdict": "ok",
+        "description": "Text with insect and laser camera detector link - should be OK as safety/privacy device"
+    },
+    {
+        "name": "Insect and Laser Camera Detector for Privacy",
+        "text": "Детектор комах та лазерних камер для захисту приватності: https://example.com/insect-laser-camera-detector",
+        "sender": "TestUser",
+        "expected_verdict": "ok",
+        "description": "Detector for privacy protection - should be OK as safety/privacy device"
+    },
+    {
+        "name": "Shipping Advice - Nova Poshta",
+        "text": "Отправь тот же Новой почтой (она есть в некоторых соседних странах, не знаю, где ты сейчас) или даже обычной почтой с отслеживанием посылки. Опиши отправление как \"смартфон б/у\" и поставь стоимость, например, 100 евро - посылки стоимостью до 150 евро ПОКА ЧТО налогом не облагаются. Но пересылка тебе будет стоить где-то 1000-1500 грн, насколько я помню.",
+        "sender": "Helper",
+        "expected_verdict": "ok",
+        "description": "Helpful shipping advice without commercial intent should be OK"
+      },
+      {
+        "name": "News Report - Digital Cow Collars",
+        "text": "Ведут стадо в нужном направлении. Миллиардер Питер Тиль вложил около $2 млрд в цифровые ошейники для коров.\n\nУстройство позволяет дистанционно направлять тысячи коров — животные реагируют на звуковые и вибросигналы и самостоятельно перемещаются, например, к доильным установкам без участия пастухов или собак.\n\nСистема также формирует так называемые виртуальные заборы — стадо удерживается в заданных границах без физических ограждений.\n\nОшейники собирают данные о состоянии животных в реальном времени: отслеживаются пищеварение, циклы фертильности и общее здоровье. \n\nФермеры платят за использование технологии от $5 до $8 за каждую корову.\n\nТиль является сооснователем таких компаний как PayPal и Palantir (последняя поставляет технологии искусственного интеллекта для Пентагона).\n\nВ пследнее время он известен также своими теориями насчёт прихода Антихриста.",
+        "sender": "Johnni",
+        "expected_verdict": "ok",
+        "description": "News report mentioning pricing information should be OK, not commercial",
+      }
+    ]
 
 # Test cases that should be banned (true positives)
 # These verify that actual sales offers are correctly identified and banned
@@ -594,6 +629,20 @@ SHOULD_BE_BANNED_CASES = [
         "sender": "Seller",
         "expected_verdict": "ban",
         "description": "Actual sales offer - should be BAN"
+    },
+    {
+        "name": "Equipment Link - Drone Detector",
+        "text": "https://kiborg.com.ua/radioelektronna-rozvidka-detektor-droniv-arrakis-analoh-tsukorka-det-arrakis-ua/",
+        "sender": "TestUser",
+        "expected_verdict": "ok",
+        "description": "Link to drone detector equipment should be OK as safety/privacy device",
+    },
+    {
+        "name": "Equipment Term - фотоловушка",
+        "text": "Та конечно что лучше , я как из варианто проверить предложил если фотоловушка накладно по деньгам .",
+        "sender": "Melon",
+        "expected_verdict": "ok",
+        "description": "Term 'фотоловушка' (camera trap) is equipment terminology, not an insult",
     }
 ]
 
